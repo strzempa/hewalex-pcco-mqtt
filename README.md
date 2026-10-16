@@ -1,212 +1,326 @@
-# Hewalex PCCO — Mapa rejestrów RS485 (Protokół GECO)
+# Hewalex PCCO — mapa rejestrów RS485 (protokół GECO) + integracja z Home Assistant
 
-Repozytorium zawiera opis i mapę rejestrów dla pompy ciepła **Hewalex PCCO** (monoblok R32) ze sterownikiem **PG-426** oraz modułem wykonawczym **MG-426**. 
+> **EN:** Register map of the **Hewalex PCCO** heat pump (PG-426 controller, MG-426 executive module), reverse-engineered over RS485 (GECO protocol, not Modbus). Used with a USR-DR164 RS485→Wi-Fi converter and a Python → MQTT bridge for Home Assistant. Unofficial; writing settings is at your own risk. Docs are in Polish — tables are mostly self-explanatory.
 
-Dane zostały wyciągnięte poprzez analizę i obserwację ruchu na porcie RS485 modułu (tzw. port modemowy, wykorzystywany fabrycznie przez moduł internetowy EKO-LAN). Wpisy powstały m.in. podczas prac nad integracją Home Assistant (`hewalex2mqtt`).
+**Dokumenty:**
 
-> ⚠️ **Uwaga:** Zaprezentowana mapa jest wynikiem inżynierii wstecznej prowadzonej na pojedynczej instalacji i nie stanowi oficjalnej dokumentacji producenta. Zapisywanie parametrów robisz na własną odpowiedzialność.
+- [`README.md`](README.md) — mapa rejestrów (ten plik),
+- [`hewalex-hardware.md`](hewalex-hardware.md) — podłączenie konwertera USR-DR164 do pompy,
+- [`home-assistant.md`](home-assistant.md) — co zrobić, żeby pompa działała w Home Assistant.
 
----
+Rejestry pompy ciepła **Hewalex PCCO** (monoblok R32) ze sterownikiem **PG-426** i modułem wykonawczym **MG-426**, czytane przez port RS485 modułu (port „modemowy”, ten sam, którego używa EKO-LAN). Opis powstał przy budowie dodatku Home Assistant `hewalex2mqtt`. To obserwacje z jednej instalacji, a nie dokumentacja producenta. Stan na **16.10.2026**.
 
-## 📌 Legendy i oznaczenia pewności danych
+Oznaczenia pewności:
 
-- ✅ **Potwierdzone:** Sprawdzone fizycznie na panelu pompy ciepła lub potwierdzone testem zapisu/odczytu.
-- 🟡 **Prawdopodobne:** Wartości pokrywają się z obserwacjami pracy urządzenia, lecz brak pełnego testu.
-- ❓ **Nieznane / Do rozszyfrowania:** Rejestr zmienia wartości lub ma wartość stałą, ale jego dokładna funkcja nie została ustalona.
+- ✅ **potwierdzone**: sprawdzone z panelem pompy albo testem;
+- 🟡 **prawdopodobne**: zgadza się z obserwacją, ale nie ma twardego testu;
+- ❓ **nieznane**: rejestr się zmienia albo ma stałą wartość, znaczenie nieustalone.
 
 ---
 
 ## 1. Połączenie i protokół
 
-Urządzenie **nie używa standardowego protokołu Modbus RTU**, lecz dedykowanego protokołu **GECO** (Hewalex/Geco).
+- **Interfejs:** RS485, 38400 bps, 8N1. Konwerter RS485 → TCP (np. USR-DR164), jeden klient TCP naraz.
+- **Adresy:** urządzenie fizyczne 4, logiczne 2; kontroler (my) 1 / 1.
+- **To NIE jest Modbus**, tylko protokół **GECO** (Hewalex/Geco).
 
-* **Parametry transmisji:** RS485, **38400 bps**, 8 data bits, No parity, 1 stop bit (`8N1`).
-* **Konfiguracja sprzętowa:** Do komunikacji można użyć konwertera RS485 $\rightarrow$ TCP (np. USR-DR164 / Waveshare) skonfigurowanego na jednego klienta TCP naraz.
-* **Adresacja:**
-  * Urządzenie fizyczne: `4`
-  * Urządzenie logiczne: `2`
-  * Kontroler (nasze oprogramowanie): `1` / `1`
+### Ramka
 
-### Budowa ramki GECO
+Ramka składa się z nagłówka i części właściwej:
 
-Kompilacja ramki składa się z nagłówka oraz części właściwej:
+```
+nagłówek:  69 <to> <from> 84 00 00 <len> <crc8>
+treść:     <toSoft16 LE> <fromSoft16 LE> <FNC> 80 00 <regLen> <regStart16 LE> [dane] <crc16>
+```
 
-$$\text{Ramka} = \underbrace{\texttt{69 <to> <from> 84 00 00 <len> <crc8>}}_{\text{Nagłówek}} \; \underbrace{\texttt{<toSoft16 LE> <fromSoft16 LE> <FNC> 80 00 <regLen> <regStart16 LE> [dane] <crc16>}}_{\text{Treść}}$$
+- CRC nagłówka: CRC-8, wielomian 0xD5.
+- CRC treści: CRC-16, wielomian 0x1021, big-endian.
+- Kody funkcji `FNC`:
 
-* **CRC nagłówka:** CRC-8 (wielomian `0xD5`).
-* **CRC treści:** CRC-16 (wielomian `0x1021`, Big-Endian).
-* **Kody funkcji (`FNC`):**
-  * `0x40` – żądanie odczytu
-  * `0x50` – odpowiedź na odczyt
-  * `0x60` – żądanie zapisu
-  * `0x70` – potwierdzenie zapisu
-* **NACK:** Odpowiedź `0x50` z bajtem `0xC0` bez danych.
-* **Limit:** Maksymalnie 226 rejestrów (słów 16-bitowych) na jedno zapytanie.
-* **Sposób adresowania:** Krok adresacji wynosi 2 bajty (jeden rejestr = word 16-bit, adresy idą co 2).
+| FNC | Znaczenie |
+|---|---|
+| `0x40` | żądanie odczytu |
+| `0x50` | odpowiedź na odczyt |
+| `0x60` | żądanie zapisu |
+| `0x70` | potwierdzenie zapisu |
 
-### Architektura danych
+- **NACK** to odpowiedź `0x50` z bajtem `0xC0` i bez danych.
+- Maksymalnie **226 rejestrów** (słów) na jedno zapytanie.
+- Adresy rejestrów są parzyste: jeden „rejestr” to słowo 16-bit, a adresy idą co 2.
 
-Panel PG-426 działa jako główny kontroler komunikujący się z modułem MG-426. Nasz interfejs RS485 podłączony jest bezpośrednio do **modułu**. 
-* Rejestry od adresu `120` w górę stanowią w większości kopie stanu panelu.
-* Nastawy w bloku `1070+` **można zapisywać** — panel automatycznie przejmuje nowe wartości.
-* **Zegara nie da się nadpisać** przez RS485 — panel natychmiast go przywraca. Zegar należy ustawiać z poziomu panelu fizycznego.
+### Architektura
+
+Panel PG-426 jest kontrolerem i rozmawia z modułem MG-426. Port RS485 rozmawia z **modułem**. Rejestry od 120 w górę to w dużej części **kopia stanu panelu**:
+
+- nastawy z bloku 1070+ **dają się zapisać** i panel je przejmuje;
+- **zegara nie da się zapisać**, bo panel go nadpisuje i ustawia się go tylko na panelu.
 
 ### Typy danych
 
-| Typ | Odczyt / Przelicznik | Uwagi |
+| Typ | Odczyt | Uwagi |
 |---|---|---|
-| `te10` | `int16` / 10 $\rightarrow$ °C | $-50.0\,^\circ\text{C}$ = czujnik rozwarty („Rozw.”)<br>$130.0\,^\circ\text{C}$ = czujnik zwarty („Zwar.”) |
-| `fl10` | `uint16` / 10 | Prąd $[A]$, ciśnienie $[bar]$ |
-| `word` | `uint16` | Liczby bez znaku, tryby, maski bitowe |
-| `s16` | `int16` | Liczby ze znakiem |
+| `te10` | int16 ze znakiem / 10 → °C | −50,0 = czujnik rozwarty („Rozw.”), 130,0 = zwarty („Zwar.”) |
+| `fl10` | uint16 / 10 | prąd [A], ciśnienie [bar] |
+| `word` | uint16 | liczby, tryby, maski bitowe |
+| `s16` | int16 ze znakiem | |
 
-### Dostępne bloki adresów
+### Bloki czytane przez `hewalex2mqtt`
 
 | Start | Liczba słów | Zawartość |
 |---|---|---|
-| `120` | 182 | Data, czas, temperatury T1–T15, słowa stanu, przekaźniki wyjściowe |
-| `300` | 32 | Obieg chłodniczy (parametry pracy sprężarki, ciśnienia, zawór EV) |
-| `408` | 64 | Wartości wyliczone, alarmy, tryb pracy |
-| `1070` | 174 | Nastawy i progi temperatur |
-| `2120` | 4 | Kody statusowe P/F jednostki zewnętrznej (moduł zgłasza NACK) |
+| 120 | 182 | data, temperatury T1–T15, słowa stanu, wyjścia |
+| 300 | 32 | obieg chłodniczy |
+| 408 | 64 | wartości wyliczone, alarmy, tryb |
+| 1070 | 174 | nastawy |
+| 2120 | 4 | kody P/F jednostki zewnętrznej (moduł odpowiada NACK) |
 
-> ℹ️ **Skan adresów (0–2600):** Moduł odpowiada poprawnie głównie w zakresie **120–1355**. Pozostałe bloki zwracają NACK (co może być również spowodowane chwilową zajętością magistrali).
+### Zasięg (skan wszystkich adresów 0–2600, 16.10.2026)
+
+- Moduł odpowiada w przedziale **ok. 120–1355**.
+- Bloki od 0 i od 1356 do 2600 zwracają NACK.
+- Przy kolejnych przebiegach NACK zdarzał się też dla pojedynczych bloków w środku zakresu. To prawdopodobnie zajętość magistrali, a nie brak rejestrów.
 
 ---
 
-## 2. Data i czas (Tylko odczyt) ✅
+## 2. Data i czas (tylko odczyt) ✅
 
 | Rejestr | Bajt niski | Bajt wysoki |
 |---|---|---|
-| `120` | Rok ($\% 100$) | Miesiąc |
-| `122` | Dzień | Dzień tygodnia ($0$ = poniedziałek) 🟡 |
-| `124` | Godzina | Minuta |
-| `126` | Sekunda | ❓ |
+| 120 | rok % 100 | miesiąc |
+| 122 | dzień | dzień tygodnia (0 = poniedziałek) 🟡 |
+| 124 | godzina | minuta |
+| 126 | sekunda | ❓ |
+
+- Panel pokazuje datę w formacie **rr-mm-dd**.
+- Zapis zegara przez RS485 nie działa.
+- Po zaniku zasilania zegar trzeba ustawić na panelu.
 
 ---
 
 ## 3. Czujniki temperatur (`te10`) ✅
 
-| Rejestr | Oznaczenie | Opis / Funkcja |
+| Rejestr | Czujnik | Uwagi |
 |---|---|---|
-| `130` | **T1** | Zasobnik CWU |
-| `132` | **T2** | Bufor CO |
-| `134` | T3 | Niepodłączony / Rezerwowy |
-| `136` | T4 | Niepodłączony / Rezerwowy |
-| `138` | T5 | Niepodłączony / Rezerwowy |
-| `140` | T6 | Niepodłączony / Rezerwowy |
-| `142` | T7 | Niepodłączony / Rezerwowy |
-| `144` | T8 | Niepodłączony / Rezerwowy |
-| `146` | T9 | Niepodłączony / Rezerwowy |
-| `148` | T10 | Niepodłączony / Rezerwowy |
-| `150` | T11 | Niepodłączony / Rezerwowy |
-| `152` | **T12** | Temperatura pokojowa obiegu CO1 |
-| `154` | T13 | Niepodłączony / Rezerwowy |
-| `156` | **T14** | Temperatura zewnętrzna |
-| `158` | T15 | Niepodłączony / Rezerwowy |
-| `160` | EXT | Czujnik zewnętrzny dodatkowy |
+| 130 | **T1** | zasobnik CWU |
+| 132 | **T2** | bufor CO |
+| 134 | T3 | |
+| 136 | T4 | |
+| 138 | T5 | |
+| 140 | T6 | |
+| 142 | T7 | |
+| 144 | T8 | |
+| 146 | T9 | |
+| 148 | T10 | |
+| 150 | T11 | |
+| 152 | **T12** | temperatura pokojowa obiegu CO1 |
+| 154 | T13 | |
+| 156 | **T14** | temperatura zewnętrzna |
+| 158 | T15 | |
+| 160 | EXT | |
+
+W tej instalacji nie wszystkie czujniki są podłączone; niepodłączone pokazują −50,0.
 
 ---
 
-## 4. Wyjścia i stan urządzenia
+## 4. Słowa stanu i wyjścia
 
-| Rejestr | Znaczenie / Funkcja | Pewność |
+| Rejestr | Znaczenie | Pewność |
 |---|---|---|
-| `162`–`192` | Słowa stanu wewnętrznego | ❓ Nieustalone |
-| `194` | Maska stanu (domyślnie `0xA37F`). **Bit 7 miga co ~15 s przy pracy sprężarki** | 🟡 |
-| `196` | **Bit 1 = ON** przy aktywnym grzaniu CWU | 🟡 |
-| `198` | Słowo stanu | ❓ Nieustalone |
-| **`208`** | **Wyjścia przekaźnikowe sterownika** (szczegóły poniżej) | ✅ / 🟡 |
+| 162–192 | słowa stanu | ❓ do rozszyfrowania |
+| 194 | maska stanu, w spoczynku `0xA37F`; **bit 7 miga co ~15 s przy pracy sprężarki** | 🟡 (bit 7 to szum) |
+| 196 | **bit 1 = ON przy grzaniu CWU** | 🟡 |
+| 198 | słowo stanu | ❓ |
+| **208** | **wyjścia sterownika (przekaźniki)**, tabela niżej | ✅ / 🟡 |
 
-### Rejestr 208 — Wyjścia przekaźnikowe
+### Rejestr 208: wyjścia
 
-| Bit | Maska | Funkcja / Wyjście | Pewność | Metoda weryfikacji |
+| Bit | Maska | Wyjście | Pewność | Jak ustalone |
 |---|---|---|---|---|
-| 0 | `0x01` | Sprężarka / Pompa ładująca | 🟡 | Aktywne przy grzaniu; gaśnie ~3 min po bicie 3 (dobieg) |
-| 2 | `0x04` | Sprężarka / Pompa ładująca | 🟡 | Zachowanie tożsame z bitem 0 |
-| 3 | `0x08` | **Grzanie CWU** (Zawór 3-drogowy) | ✅ | ON przy grzaniu wody, wyłącza się po osiągnięciu zadanej T1 |
-| 5 | `0x20` | **Pompa obiegowa CO1** (podłogówka) | ✅ | Test: ustawienie zadanej CO1 > T12 wymusza natychmiastowe ON |
-| 6 | `0x40` | Taktowanie co 15–30 s podczas pracy CO1 | ❓ | Zawór mieszacza / sterowanie pompą? |
-| 7 | `0x80` | Nieaktywny | ❓ | — |
+| 0 | `0x01` | sprężarka / pompa ładująca | 🟡 | ON przy grzaniu; gaśnie ~3 min po bicie 3 (dobieg) |
+| 2 | `0x04` | sprężarka / pompa ładująca | 🟡 | jak bit 0 |
+| 3 | `0x08` | **grzanie CWU** (zawór 3-drogowy na CWU) | ✅ | ON przy grzaniu wody, gaśnie przy T1 = zadana |
+| 5 | `0x20` | **pompy obiegowe CO1** (podłogówka) | ✅ | test: zadana CO1 powyżej T12 → bit 5 od razu ON, T2 spada |
+| 6 | `0x40` | pulsuje co ~15–30 s przy pracy CO1 | ❓ | zawór / pompa? |
+| 7 | `0x80` | nigdy nie widziany | ❓ | |
+
+Bit wbudowanej grzałki elektrycznej pompy nie jest jeszcze ustalony; trzeba go obserwować przy mrozie, poniżej temperatury biwalentnej.
 
 ---
 
-## 5. Obieg chłodniczy (Blok 300)
+## 5. Obieg chłodniczy (blok 300)
 
-| Rejestr | Nazwa | Opis | Typ | Pewność |
-|---|---|---|---|---|
-| `300` | **Ta1** | Temperatura powietrza (jednostka zewnętrzna) | `te10` | ✅ |
-| `302` | **Tp1** | Temperatura parowania | `te10` | ✅ |
-| `304` | **Td1** | Temperatura tłoczenia | `te10` | ✅ |
-| `306` | **Ts1** | Temperatura ssania | `te10` | ✅ |
-| `316` | **EV1** | Elektoniczny zawór rozprężny (krok) | `word` | ✅ |
-| `318` | **I1** | Prąd sprężarki $[A]$ | `fl10` | ✅ |
-| `320` | **U1** | Napięcie zasilania $[V]$ | `word` | ✅ |
-| `322` | — | Wydajność / Częstotliwość sprężarki (zakres 36–67 przy pracy, 0 przy postoju) | `word` | 🟡 |
-| `326` | **HP1** | Wysokie ciśnienie $[bar]$ | `fl10` | ✅ |
-| `330` | **LP1** | Niskie ciśnienie $[bar]$ | `fl10` | ✅ |
-| `334` | — | Bieg wentylatora? (wartości 64 / 80) | `word` | 🟡 |
-| `338` | — | Postój / Blokada czasowa ponownego startu (bit 12: `4096`) | `word` | ❓ |
-
-> 💡 **Wskazówka:** Szacowaną moc pobieraną przez sprężarkę można obliczyć ze wzoru na moc pozorną:
-> $$P \approx U1 \cdot I1 \quad [\text{VA}]$$
-> (Błąd pomiarowy wynosi ok. $\pm 15\%$).
-
----
-
-## 6. Wartości wyliczone, tryby i alarmy (Blok 408)
-
-| Rejestr | Parametr | Typ | Pewność |
+| Rejestr | Znaczenie | Typ | Pewność |
 |---|---|---|---|
-| `408` | **CWU: Wartość zadana** (aktualnie wyliczona z programu komfort/eko) | `te10` | ✅ |
-| `410` | **CO1 zasilanie zadane** (wyliczone z krzywej grzewczej) | `te10` | ✅ |
-| `412` | CO2 zasilanie zadane | `te10` | ✅ |
-| `414` | **Błędy i alarmy G** (komunikacja) | `word` | ✅ |
-| `418` | **Błędy i alarmy S** (czujniki) | `word` | ✅ |
-| `422` | **Błędy i alarmy C / S15** | `word` | ✅ |
-| `436` | **Bit 8 (`0x100`) = Obieg CO1 aktywny** | `word` | ✅ |
-| `440` | **Tryb pracy:** `1` = Chłodzenie, `2` = CWU, `3` = Grzanie | `word` | ✅ |
-| `468` | **CO1 dolny próg zasilania** ($410 - \text{histereza}$) | `te10` | ✅ |
-| `470` | **CO1 górny próg zasilania** ($= 410$) | `te10` | ✅ |
+| 300 | **Ta1**: temperatura powietrza (jednostka zewnętrzna) | te10 | ✅ |
+| 302 | **Tp1**: temperatura parowania | te10 | ✅ |
+| 304 | **Td1**: temperatura tłoczenia | te10 | ✅ |
+| 306 | **Ts1**: temperatura ssania | te10 | ✅ |
+| 308, 310, 312, 314 | stałe 1 | word | ❓ |
+| 316 | **EV1**: elektroniczny zawór rozprężny (kroki) | word | ✅ |
+| 318 | **I1**: prąd sprężarki [A] | fl10 | ✅ |
+| 320 | **U1**: napięcie zasilania [V] | word | ✅ |
+| 322 | 36–67 w trakcie pracy, 0 po zatrzymaniu; rośnie z I1 → **wydajność / częstotliwość sprężarki** | word | 🟡 |
+| 324, 328 | stałe 1 | word | ❓ |
+| 326 | **HP1**: wysokie ciśnienie [bar] | fl10 | ✅ |
+| 330 | **LP1**: niskie ciśnienie [bar] | fl10 | ✅ |
+| 332 | 0 | word | ❓ |
+| 334 | 64 / 80 w trakcie pracy, 64 po zatrzymaniu → bieg wentylatora? | word | 🟡 |
+| 336 | 8 przez kilka minut przy szczycie prądu → ograniczenie / zabezpieczenie? | word | ❓ |
+| 338 | 0 → 4096 (bit 12) przy zatrzymaniu sprężarki → postój / blokada ponownego startu? | word | ❓ |
 
-### Bity błędów i alarmów
-
-#### Rejestr `414` (Błędy komunikacji - G)
-* **Bit 0 (`G01`):** Brak komunikacji panel $\rightarrow$ moduł
-* **Bit 1 (`G02`):** Brak komunikacji moduł $\rightarrow$ panel
-* **Bit 2 (`G03`):** Brak komunikacji z jednostką zewnętrzną
-* **Bit 3 (`G04`):** Błąd transmisji danych
-
-#### Rejestr `418` (Awarie czujników - S)
-* **Bity 0–13 (`S01`–`S14`):** Uszkodzenie / brak odczytu z odpowiadającego czujnika $T1$–$T14$.
-
-#### Rejestr `422`
-* **Bit 3 (`S15`):** Brak przepływu wody (filtr, zapowietrzenie układu lub słabe ciśnienie).
+Moc sprężarki można szacować jako U1 × I1 (moc pozorna, błąd ok. ±15 %).
 
 ---
 
-## 7. Nastawy i progi (Blok 1070+)
+## 6. Wartości wyliczone, alarmy, tryb (blok 408)
 
-Możliwy zapis za pomocą komendy `FNC 0x60`. Panel akceptuje wprowadzane zmiany.
+| Rejestr | Znaczenie | Typ | Pewność |
+|---|---|---|---|
+| 400 | ~4883, zmienia się o ±1 → licznik (godziny pracy?) | word | ❓ |
+| 402 | `0x5A00` → `0x6400` przy zatrzymaniu (starszy bajt 90 → 100) | word | ❓ |
+| 408 | **CWU zadana** (aktualna, z programu komfort/eko) | te10 | ✅ |
+| 410 | **CO1 zasilanie zadane** (z krzywej grzewczej) | te10 | ✅ |
+| 412 | CO2 zasilanie zadane | te10 | ✅ |
+| 414 | **alarmy G** (komunikacja), bity niżej | word | ✅ |
+| 418 | **alarmy S** (czujniki), bity niżej | word | ✅ |
+| 422 | **alarmy C / S15**, bity niżej | word | ✅ |
+| 436 | **bit 8 (`0x100`) = obieg CO1 włączony** | word | ✅ |
+| 440 | **tryb pracy**: 1 = chłodzenie, 2 = CWU, 3 = grzanie | word | ✅ |
+| 450 | 25–32, zmienia się w trakcie pracy | word | ❓ |
+| 452 | 119 → 135 | word | ❓ |
+| 456, 466 | 0 / 65 / 120 (też 10, 89, 98, 102) cyklicznie przy pracy → liczniki czasu [s]? | word | ❓ |
+| 460 | 1–3 w trakcie pracy → etap pracy? | word | ❓ |
+| 468 | **CO1 zasilanie: próg dolny** (= 410 − histereza wody, 5 °C) | te10 | ✅ |
+| 470 | **CO1 zasilanie: próg górny** (= 410) | te10 | ✅ |
+| 472, 476 | 2 → 0 przy zatrzymaniu sprężarki | word | ❓ |
 
-| Rejestr | Parameter | Typ | Zakres testowy | Zapis | Pewność |
+### Bity alarmów
+
+**414: komunikacja**
+
+| Bit | Kod | Opis |
+|---|---|---|
+| 0 | G01 | brak komunikacji panel → moduł |
+| 1 | G02 | brak komunikacji moduł → panel |
+| 2 | G03 | brak komunikacji z jednostką zewnętrzną |
+| 3 | G04 | błąd komunikacji |
+
+**418: czujniki**
+
+| Bit | Kod | Czujnik |
+|---|---|---|
+| 0 | S01 | T1 (CWU) |
+| 1 | S02 | T2 (bufor) |
+| 2 | S03 | T3 |
+| 3 | S04 | T4 |
+| 4 | S05 | T5 |
+| 5 | S06 | T6 |
+| 6 | S07 | T7 |
+| 7 | S08 | T8 |
+| 8 | S09 | T9 |
+| 9 | S10 | T10 |
+| 10 | S11 | T11 |
+| 11 | S12 | T12 (pokojowy) |
+| 12 | S13 | T13 |
+| 13 | S14 | T14 (zewnętrzny) |
+
+**422**
+
+| Bit | Kod | Opis |
+|---|---|---|
+| 0 | C01 | |
+| 1 | C02 | |
+| 3 | S15 | brak przepływu (filtr / zapowietrzenie / ciśnienie) |
+
+**2120 / 2121: kody jednostki zewnętrznej** (wg instrukcji serwisowej; ten moduł odpowiada na nie NACK)
+
+| Rejestr | Bit | Kod | Opis |
+|---|---|---|---|
+| 2120 | 0 | P01 | zasilanie |
+| 2120 | 1 | P02 | fazy sprężarki |
+| 2120 | 2 | P03 | IPM |
+| 2120 | 3 | P04 | korki oleju ⓘ |
+| 2120 | 4 | P05 | presostat HP |
+| 2120 | 5 | P06 | wysokie ciśnienie |
+| 2120 | 6 | P07 | podgrzewanie oleju ⓘ |
+| 2120 | 7 | P08 | temperatura tłoczenia |
+| 2120 | 8 | P09 | parownik |
+| 2120 | 9 | P10 | napięcie AC |
+| 2120 | 10 | P11 | T zewnętrzna poza zakresem |
+| 2120 | 11 | P12 | prędkość ⓘ |
+| 2120 | 12 | P13 | presostat LP |
+| 2121 | 0 | F01 | czujnik Ta |
+| 2121 | 1 | F02 | czujnik Tp |
+| 2121 | 2 | F03 | czujnik Td |
+| 2121 | 3 | F04 | czujnik Ts |
+| 2121 | 4 | F05 | czujnik HP |
+| 2121 | 5 | F06 | czujnik LP |
+| 2121 | 6 | F07 | blokada (3× P05/P13) |
+
+ⓘ to komunikaty informacyjne, które pojawiają się przy normalnej pracy, a nie alarmy.
+
+---
+
+## 7. Nastawy (blok 1070+)
+
+**Zapis działa** (FNC `0x60` → `0x70`), panel przejmuje wartość. Zakresy w tabeli to limity przyjęte w `hewalex2mqtt`, a nie limity producenta.
+
+| Rejestr | Nastawa | Typ | Zakres (raw) | Zapis | Pewność |
 |---|---|---|---|---|---|
-| **`1070`** | **CWU: Temp. komfortowa** | `te10` | 35.0 – 55.0 °C (krok 0.5) | ✅ | ✅ |
-| **`1176`** | **CO1: Temp. pokojowa komfort** | `te10` | 15.0 – 26.0 °C (krok 0.1) | ✅ | ✅ |
-| **`1178`** | **CO1: Temp. pokojowa eko** | `te10` | 15.0 – 26.0 °C | ✅ | ✅ |
-| **`1184`** | **CO1: Histereza pokojowa** | `fl10` | 0.1 – 2.0 °C | ✅ | ✅ |
-| **`1192`** | **CO1: Krzywa grzewcza** | `word` | 1 – 9 | ✅ | ✅ |
+| **1070** | **CWU: temperatura komfort** | te10 | 350–550 (35–55 °C), krok 0,5 | ✅ | ✅ |
+| 1072 | CWU eko? | te10 | — | — | ❓ |
+| 1074 | ? | te10 | — | — | ❓ |
+| **1176** | **CO1: temperatura pokojowa komfort** | te10 | 150–260 (15–26 °C), krok 0,1 | ✅ | ✅ |
+| **1178** | **CO1: temperatura pokojowa eko** | te10 | 150–260 | ✅ | ✅ (zgodna z panelem) |
+| 1182 | CO1: temperatura pokojowa (trzecia nastawa, np. nocna?); zapis 22,5 → ack, odczyt zgodny | te10 | 150–260 | ✅ | ❓ znaczenie w testach |
+| **1184** | **CO1: histereza pokojowa** | fl10 | 1–20 (0,1–2,0 °C) | ✅ | ✅ |
+| 1186 | 45,0 °C | te10 | — | — | ❓ |
+| 1188 | 40,0 °C → kandydat na **CWU eko** | te10 | — | — | ❓ |
+| **1192** | **CO1: krzywa grzewcza** | word | 1–9 | ✅ | ✅ |
+| 1020 | −20,0 (to NIE jest „T zewnętrzna wyłączenia”, która na panelu ma −25) | te10 | — | — | ❓ |
+| 1240 | 21,0 °C | te10 | — | — | ❓ |
+| 1242 | 60,0 °C → max zasilania? | te10 | — | — | ❓ |
 
-> 📌 **Praktyczny tip przy sterowaniu z Home Assistant:**
-> Zmiana harmonogramów z poziomu sterownika bywa niestabilna. Zdecydowanie bezpieczniejszym podejściem jest **wpisywanie tej samej wartości temperatury do rejestrów komfortu i eko** (np. jednoczesny zapis do `1176` oraz `1178`). Pozwala to pominąć fabryczny harmonogram i oddać pełne sterowanie zewnętrznej automatyce.
+Wskazówki praktyczne:
+
+- **Programy czasowe** (komfort/eko) zmienione na panelu potrafią go zawiesić i zrestartować. Bezpieczniej zostawić program w spokoju i zapisywać **tę samą wartość do komfort i eko** (np. 1176 i 1178). Wtedy program przestaje mieć znaczenie, a temperaturą steruje system nadrzędny.
+- Biwalentna temperatura dla grzałki CO (na panelu −12,0 °C) nie jest jeszcze znaleziona w bloku nastaw; szukać raw `-120`.
 
 ---
 
-## 📝 Referencje i podziękowania
+## 8. Do zrobienia
 
-* [mvdklip/Domoticz-Hewalex](https://github.com/mvdklip/Domoticz-Hewalex) – wzorce protokołu GECO dla pomp PCWU.
-* [aelias-eu/hewalex-geco-protocol](https://github.com/aelias-eu/hewalex-geco-protocol) – opis struktury ramek GECO.
-* Instrukcja serwisowa sterowników Hewalex PCCO (kody błędów i alarmów).
+- Rozszyfrować 162–192, 194/196/198 i bit wbudowanej grzałki (prawdopodobnie w 208 albo 196).
+- Potwierdzić znaczenie 1182 (nocna zadana?) i 1188 (CWU eko?).
+- Znaleźć rejestr, który pokazuje aktywny program komfort/eko.
+- Potwierdzić kandydatów z bloków 300 i 400 (322, 334, 336, 338, 400, 402, 456/466, 460) na kilku dobach danych: grzanie CWU, CO1, odszranianie, antylegionella.
+- Sprawdzić, czy 436 i 440 przyjmują zapis.
+- Przy NACK dzielić blok na mniejsze; zakres 0–119 i powyżej 1356 może być częściowo dostępny.
 
 ---
-*Plik utworzony i zweryfikowany na bazie konfiguracji: PG-426 (G-426-P03), MG-426 (MG426-P02-2U3).*
+
+## 9. Podpowiedzi z pompy PCWU (inna mapa, ten sam sterownik G-426)
+
+W `mvdklip/Domoticz-Hewalex` (`devices/pcwu.py`) jest mapa dla pompy CWU **PCWU** (PG-426-P01 + MG-426-P01). Adresy **nie pokrywają się** z PCCO (np. T1 = 128, nastawy od 302), ale układ pól daje tropy:
+
+- **Maska wyjść PCWU (rej. 196):** bit 0 = wentylator, bit 2 = pompa wody, bit 5 = „pompa ciepła ON”, bit 11 = sprężarka, bit 12 = grzałka E. W PCCO rej. 208 bity 0 i 2 też zapalają się przy grzaniu i gasną z dobiegiem → 🟡 **208 bit 0 = wentylator, bit 2 = pompa ładująca**. Bity 11/12 w 208 warto obserwować jako kandydatów na sprężarkę / grzałkę wbudowaną.
+- **WaitingStatus PCWU (rej. 202):** 0 = gotowa, 2 = wyłączona, 32 = „właśnie zatrzymana, czeka na restart”, 64 = niski COP; **WaitingTimer (206)** odlicza do 0. W PCCO kandydaci: 338 (bit 12 po zatrzymaniu) i 456/466 (odliczanie).
+- **Rejestr 252 (status panelu)** i **256 (ostatnio zmieniony parametr)** w komunikacji panel ↔ moduł PCWU: po zmianie parametru na panelu moduł czyta 8 rejestrów od 256 (kod parametru, urządzenie, wartość). W PCCO 252/256 leżą w czytelnym zakresie — **zmiana jednego parametru na panelu (nie harmonogramu!) powinna pokazać w skanie, który rejestr nastaw go przechowuje** (np. biwalentna −12).
+
+---
+
+## Historia zmian
+
+- **16.10.2026 (2):** sekcja 9 — tropy z mapy PCWU (208 bit 0/2, status oczekiwania, 252/256); `hewalex2mqtt` 1.1.2 dzieli bloki z NACK, żeby znaleźć częściowo dostępne zakresy 0–119 i > 1356 (wynik: `obraz.json` → `zakresy`).
+- **16.10.2026:** pierwsza wersja: mapa z `hewalex2mqtt` 1.1.1, wyjścia z rejestru 208 (test 15.10), pierwszy przegląd skanu 0–2600 (kandydaci w blokach 300 i 400).
+
+---
+
+## Źródła i podziękowania
+
+- [mvdklip/Domoticz-Hewalex](https://github.com/mvdklip/Domoticz-Hewalex) (GPL-3.0): protokół GECO, typy rejestrów (PCWU).
+- [aelias-eu/hewalex-geco-protocol](https://github.com/aelias-eu/hewalex-geco-protocol) (MIT): opis ramek GECO.
+- Instrukcja serwisowa Hewalex PCCO: kody alarmów G/S/C/P/F.
+- Własne obserwacje: odczyty przez RS485, testy zapisu, porównanie z panelem PG-426, pełny skan adresów 0–2600 (10–16.10.2026).
+
+Rejestry pochodzą z jednej instalacji (PG-426 G-426-P03, MG-426 MG426-P02-2U3). Inne wersje firmware mogą się różnić. Zapis nastaw robisz na własne ryzyko.
