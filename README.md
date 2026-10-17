@@ -2,6 +2,23 @@
 
 > **EN:** Register map of the **Hewalex PCCO** heat pump (PG-426 controller, MG-426 executive module), reverse-engineered over RS485 (GECO protocol, not Modbus). Used with a USR-DR164 RS485→Wi-Fi converter and a Python → MQTT bridge for Home Assistant. Unofficial; writing settings is at your own risk. Docs are in Polish — tables are mostly self-explanatory.
 
+> [!IMPORTANT]
+> ## 🔎 SZUKAM INFORMACJI O POZOSTAŁYCH REJESTRACH — POMÓŻ!
+>
+> Ta mapa powstała metodą prób i obserwacji na jednej instalacji. **Wiele rejestrów jest wciąż nieznanych (❓) albo tylko prawdopodobnych (🟡).** Jeśli wiesz coś więcej, **odezwij się** — każda informacja pomoże mnie i innym użytkownikom pomp Hewalex.
+>
+> Szczególnie szukam:
+>
+> - **słów stanu 162–198** i **bitów 6–7 rejestru 208** (wyjścia sterownika),
+> - **bloku 300–338 i 400–476** (obieg chłodniczy, liczniki, etapy pracy, blokady),
+> - **nastaw 1020, 1072–1074, 1182–1188, 1240–1242** (m.in. nastawa nocna CO1, CWU eko, max zasilania),
+> - adresów **poniżej 226 i powyżej 1355** (moduł odpowiada NACK),
+> - dokumentacji protokołu **GECO / EKO-LAN / eKontrol** dla PG-426 / MG-426 (także od innych modeli: PCWU, ZPS, PCCO SPLIT).
+>
+> **Jak się odezwać:** załóż [Issue](../../issues) albo napisz na moim profilu GitHub [@strzempa](https://github.com/strzempa). Mile widziane zrzuty z panelu, numery rejestrów i wartości, nawet „chyba”.
+>
+> **EN:** 🔎 **I'm looking for information about the remaining registers!** Many registers are still unknown (❓) or only probable (🟡) — especially status words 162–198, register 208 bits 6–7, blocks 300–338 / 400–476, settings 1020, 1072–1074, 1182–1188, 1240–1242, addresses below 226 / above 1355, and any GECO / EKO-LAN / eKontrol protocol documentation. **If you know anything, please open an [Issue](../../issues) or contact me via my GitHub profile [@strzempa](https://github.com/strzempa).** Thank you!
+
 **Dokumenty:**
 
 - [`README.md`](README.md) — mapa rejestrów (ten plik),
